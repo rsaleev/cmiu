@@ -137,7 +137,7 @@ class EntryNotifier:
             pre_tasks = []
             uid = uuid4()
             pre_tasks.append(self.__dbconnector_is.callproc('is_logs_ins', rows=0, values=['cmiu', 'info',
-                                                                                           json.dumps({'uid': request.uid, 'request': request.instance}, default=str), datetime.now()]))
+                                                                                           json.dumps({'uid': request.uid, 'operation': self.alias, 'request': request.instance}, default=str), datetime.now()]))
             pre_tasks.append(self.__logger.info({'module': self.name, 'request': {'uid': request.uid, 'data': request.instance}}))
             await asyncio.gather(*pre_tasks)
             conn = aiohttp.TCPConnector(forced_close=True, verify_ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
@@ -149,15 +149,13 @@ class EntryNotifier:
                         # xml is returned
                         response = await r.json()
                         post_tasks.append(self.__dbconnector_is.callproc('is_logs_ins', rows=0, values=['cmiu', 'info',
-                                                                                                        json.dumps({'uid': request.uid, 'request': json.dumps(response)}, default=str), datetime.now()]))
+                                                                                                        json.dumps({'uid': request.uid, 'operation': self.alias, 'request': json.dumps(response)}, default=str), datetime.now()]))
                         post_tasks.append(self.__logger.info({'module': self.name, 'response': {'uid': request.uid, 'data': request.instance}}))
                 # handle request exceptions
                 except (aiohttp.ClientError, aiohttp.InvalidURL, asyncio.TimeoutError, TimeoutError, OSError, gaierror) as e:
                     # log exception
                     post_tasks.append(self.__logger.error({"module": self.name, 'uid': request.uid, 'operation': request.operation, 'exception': repr(e)}))
                     # add to queue
-                    await self.__dbconnector_is.callproc('cmiu_queue_ins', rows=0,
-                                                         values=[request.ticket, self.alias, request.tra_uid, request.uid, json.dumps(request.instance, default=str)])
                     post_tasks.append(self.__dbconnector_is.callproc('is_log_ins', rows=0, values=[self.source, 'error',
                                                                                                    json.dumps({'uid': request.uid, 'operation': self.alias, 'exception': repr(e)}, default=str), datetime.now()]))
                     # update process status to show that an error occured

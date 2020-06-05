@@ -149,8 +149,6 @@ class EntryListener:
                     # log exception
                     post_tasks.append(self.__logger.error({"module": self.name, 'uid': request.uid, 'operation': request.operation, 'exception': repr(e)}))
                     # add to queue
-                    await self.__dbconnector_is.callproc('cmiu_queue_ins', rows=0,
-                                                         values=[request.ticket, self.alias, request.tra_uid, request.uid, json.dumps(request.instance, default=str)])
                     post_tasks.append(self.__dbconnector_is.callproc('is_log_ins', rows=0, values=['cmiu', 'error',
                                                                                                    json.dumps({'uid': request.uid, 'operation': self.alias, 'exception': repr(e)}, default=str), datetime.now()]))
                     # update process status to show that an error occured

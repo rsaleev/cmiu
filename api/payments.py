@@ -4,12 +4,14 @@ import json
 from uuid import uuid4
 from utils.asynclog import AsyncLogger
 from utils.asyncsql import AsyncDBPool
-from utils.asyncamqp import AsyncAMQP
+from utils.asyncamqp import AsyncAMQP, ChannelClosed, ChannelInvalidStateError
 from datetime import datetime
+from socket import gaierror
 import os
 import functools
 import signal
 import asyncio
+import aiohttp
 importlib.reload(cs)
 
 
@@ -20,6 +22,7 @@ class PaymentNotifier:
         self.__amqpconnector = None
         self.__dbconnector_is = None
         self.name = 'PaymentNotifier'
+        self.alias = 'payments'
 
     @property
     def eventloop(self):
@@ -119,3 +122,90 @@ class PaymentNotifier:
         await self.__dbconnector_is.callproc('is_processes_ins', rows=0, values=[self.name, 1, pid, datetime.now()])
         await self.__logger.info({'module': self.name, 'info': 'Started'})
         return self
+
+    async def _process(self, redelivered, key, data):
+        stored_data = await self.__dbconnector_is.callproc('is_payment_get', rows=1, values=[data['device_id'], 1])
+        if not stored_data is None:
+            request = self.PaymentRequest(data, stored_data)
+            pre_tasks = []
+            uid = uuid4()
+            pre_tasks.append(self.__dbconnector_is.callproc('is_logs_ins', rows=0, values=['cmiu', 'info',
+                                                                                           json.dumps({'uid': request.uid, 'operation': self.alias, 'request': request.instance}, default=str), datetime.now()]))
+            pre_tasks.append(self.__logger.info({'module': self.name, 'request': {'uid': request.uid, 'data': request.instance}}))
+            await asyncio.gather(*pre_tasks)
+            conn = aiohttp.TCPConnector(forced_close=True, verify_ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
+            post_tasks = []
+            async with aiohttp.ClientSession(connector=conn) as session:
+                # convert dict to urlencoded on the fly
+                try:
+                    async with session.post(url=f'{cs.CMIU_URL}/payments', json=request.instance, timeout=cs.CMIU_REQUEST_TIMEOUT, raise_for_status=True) as r:
+                        # xml is returned
+                        response = await r.json()
+                        post_tasks.append(self.__dbconnector_is.callproc('is_logs_ins', rows=0, values=['cmiu', 'info',
+                                                                                                        json.dumps({'uid': request.uid, 'operation': self.alias, 'request': json.dumps(response)}, default=str), datetime.now()]))
+                        post_tasks.append(self.__logger.info({'module': self.name, 'response': {'uid': request.uid, 'data': request.instance}}))
+                # handle request exceptions
+                except (aiohttp.ClientError, aiohttp.InvalidURL, asyncio.TimeoutError, TimeoutError, OSError, gaierror) as e:
+                    # log exception
+                    post_tasks.append(self.__logger.error({"module": self.name, 'uid': request.uid, 'operation': request.operation, 'exception': repr(e)}))
+                    # add to queue
+                    post_tasks.append(self.__dbconnector_is.callproc('is_log_ins', rows=0, values=[self.source, 'error',
+                                                                                                   json.dumps({'uid': request.uid, 'operation': self.alias, 'exception': repr(e)}, default=str), datetime.now()]))
+                    # update process status to show that an error occured
+                    post_tasks.append(self.__dbconnector_is.callproc('cmiu_processes_upd', rows=0, values=[self.name, 1, 1, datetime.now()]))
+                finally:
+                    try:
+                        await session.close()
+                    except:
+                        pass
+                    await asyncio.gather(*post_tasks)
+
+    async def _dispatch(self):
+        while not self.eventsignal:
+            await self.__dbconnector_is.callproc('cmiu_processes_upd', rows=0, values=[self.name, 1, 0, datetime.mow()])
+            try:
+                await self.__amqpconnector.receive(self._process)
+            except (ChannelClosed, ChannelInvalidStateError):
+                pass
+
+    async def _signal_cleanup(self):
+        await self.__logger.warning({'module': self.name, 'msg': 'Shutting down'})
+        await self.__dbconnector_is.callproc('cmiu_processes_upd', rows=0, values=[self.name, 0, 0, datetime.mow()])
+        closing_tasks = []
+        closing_tasks.append(self.__dbconnector_is.disconnect())
+        closing_tasks.append(self.__amqpconnector.disconnect())
+        closing_tasks.append(self.__logger.shutdown())
+        await asyncio.gather(*closing_tasks, return_exceptions=True)
+
+    async def _signal_handler(self, signal):
+        # stop while loop coroutine
+        self.eventsignal = True
+        tasks = [task for task in asyncio.all_tasks(self.eventloop) if task is not
+                 asyncio.tasks.current_task()]
+        for t in tasks:
+            t.cancel()
+        asyncio.ensure_future(self._signal_cleanup())
+        # perform eventloop shutdown
+        try:
+            self.eventloop.stop()
+            self.eventloop.close()
+        except:
+            pass
+        # close process
+        os._exit(0)
+
+    def run(self):
+        # use own event loop
+        self.eventloop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.eventloop)
+        signals = (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+        # add signal handler to loop
+        for s in signals:
+            self.eventloop.add_signal_handler(s, functools.partial(asyncio.ensure_future,
+                                                                   self._signal_handler(s)))
+        # try-except statement
+        try:
+            self.eventloop.run_until_complete(self._initialize())
+            self.eventloop.run_until_complete(self._dispatch())
+        except asyncio.CancelledError:
+            pass
