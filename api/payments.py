@@ -75,6 +75,19 @@ class PaymentNotifier:
             return str(self.__uid)
 
         @property
+        def pay_method(self):
+            return self.__method
+
+        @pay_method.getter
+        def pay_method(self):
+            if self.__method == 'C':
+                return 1
+            elif self.__method == 'P':
+                return 2
+            elif self.__method == 'M':
+                return 4
+
+        @property
         def pay_type(self):
             return self.__pay_type
 
@@ -97,6 +110,25 @@ class PaymentNotifier:
                 return 3
 
         @property
+        def payment_count(self):
+            return self.__pay_count
+
+        @payment_count.getter
+        def payment_count(self):
+            if self.__pay_count == 1:
+                return 1
+            elif self.__pay_count > 1:
+                return 2
+
+        @property
+        def payment_price(self):
+            return self.__price
+
+        @payment_price.getter
+        def payment_price(self):
+            return self.__price * 100
+
+        @property
         def date_event(self):
             return self.__date_event
 
@@ -106,9 +138,10 @@ class PaymentNotifier:
 
         @property
         def instance(self):
-            return {"type": self.__type, "device_number": self.__device_number, "device_type": self.__device_type, "transaction_type": self.tra_type,
-                    "card": self.__card, "card_type": self.card_type, "lpr": self.__lpr, "date_event": self.date_event,  "transaction_uid": self.__transaction_uid,
-                    "error": self.__error}
+            return {"type": self.__type, "device_number": self.__device_number, "device_type": self.__device_type, "payment_method": self.pay_method,
+                    "payment_method_addition": self.__method_info, "card": self.__ticket,
+                    "card_type": self.ticket_type, "payment_type": self.pay_type, "payment_count": self.payment_count, "price": self.payment_price,
+                    "date_event": self.date_event, "error": self.__error}
 
     async def _initialize(self):
         self.__logger = await AsyncLogger().getlogger(cs.IS_LOG)
@@ -124,6 +157,7 @@ class PaymentNotifier:
         return self
 
     async def _process(self, redelivered, key, data):
+        await asyncio.sleep(0.5)
         stored_data = await self.__dbconnector_is.callproc('is_payment_get', rows=1, values=[data['device_id'], 1])
         if not stored_data is None:
             request = self.PaymentRequest(data, stored_data)
