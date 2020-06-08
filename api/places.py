@@ -103,13 +103,13 @@ class PlacesNotifier:
             pre_tasks.append(self.__dbconnector_is.callproc('is_logs', rows=0, values=['cmiu', 'info', json.dumps(request.instance, default=str), datetime.now()]))
             await asyncio.gather(*pre_tasks)
             try:
-                conn = aiohttp.TCPConnector(forced_close=True, verify_ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
+                conn = aiohttp.TCPConnector(force_close=True, ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
                 async with aiohttp.ClientSession(connector=conn) as session:
                     async with session.post(url=f'{cs.CMIU_URL}/places', json=request.instance, timeout=cs.CMIU_TIMEOUT, raise_for_status=True) as r:
                         response = await r.json()
                         post_tasks.append(self.__logger.info({'module': self.name, 'uid': request.uid, 'response': response}))
                         post_tasks.append(self.__dbconnector_is.callproc('is_logs', rows=0, values=[
-                            'cmiu', 'info', json.dumps({'uid': request.uid, 'response': response}), datetime.now()]))
+                            'cmiu', 'info', json.dumps({'uid': request.uid, 'response': response}, default=str), datetime.now()]))
             except (aiohttp.ClientError, aiohttp.InvalidURL, asyncio.TimeoutError, TimeoutError, OSError, gaierror) as e:
                 # log exception
                 post_tasks.append(self.__logger.error({"module": self.name, 'uid': request.uid, 'operation': request.operation, 'exception': repr(e)}))

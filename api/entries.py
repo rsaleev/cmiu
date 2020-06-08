@@ -15,7 +15,7 @@ import configuration.settings as cs
 importlib.reload(cs)
 
 
-class EntryListener:
+class EntryNotifier:
     def __init__(self):
         self.__eventloop = None
         self.__eventsignal = False
@@ -117,7 +117,7 @@ class EntryListener:
         connections_tasks = []
         connections_tasks.append(AsyncDBPool(cs.IS_SQL_CNX).connect())
         connections_tasks.append(AsyncAMQP(cs.IS_AMQP_USER, cs.IS_AMQP_PASSWORD, cs.IS_AMQP_HOST, exchange_name='integration', exchange_type='topic').connect())
-        self.__dbconnector_is, self.__dbconnector_wp, self.__soapconnector_wp, self.__amqpconnector = await asyncio.gather(*connections_tasks)
+        self.__dbconnector_is, self.__amqpconnector = await asyncio.gather(*connections_tasks)
         await self.__amqpconnector.bind('cmiu_entries', ['event.entry.loop2', 'event.entry.reversed'], durable=True)
         pid = os.getpid()
         await self.__dbconnector_is.callproc('cmiu_processes_ins', rows=0, values=[self.name, 1, pid])
@@ -125,7 +125,11 @@ class EntryListener:
         return self
 
     async def _process(self, redelivered, key, data):
-        stored_data = await self.__dbconnector_is.callproc('is_entry_get', rows=1, values=[data['device_id'], 1])
+        consume_tasks = []
+        # fetch and update TS of consume
+        consume_tasks.append(self.__dbconnector_is.callproc('is_entry_by_uid_get', rows=1, values=[data['tra_uid']]))
+        consume_tasks.append(self.__dbconnector_is.callproc('is_entry_upd', rows=0, values=[data['tra_uid'], datetime.now(), None, None]))
+        stored_data, _ = await asyncio.gather(*consume_tasks)
         if not stored_data is None:
             request = self.EntryRequest(data, stored_data)
             pre_tasks = []
@@ -134,7 +138,7 @@ class EntryListener:
                                                                                            json.dumps({'uid': request.uid, 'request': request.instance}, default=str), datetime.now()]))
             pre_tasks.append(self.__logger.info({'module': self.name, 'request': {'uid': request.uid, 'operation': self.__alias, 'data': request.instance}}))
             await asyncio.gather(*pre_tasks)
-            conn = aiohttp.TCPConnector(force_close=True, verify_ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
+            conn = aiohttp.TCPConnector(force_close=True, ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
             post_tasks = []
             async with aiohttp.ClientSession(connector=conn) as session:
                 # convert dict to urlencoded on the fly
@@ -143,7 +147,7 @@ class EntryListener:
                         response = await r.json()
                         post_tasks.append(self.__dbconnector_is.callproc('is_logs_ins', rows=0, values=['cmiu', 'info',
                                                                                                         json.dumps({'uid': request.uid, 'operation': self.alias, 'response': json.dumps(response)}, default=str), datetime.now()]))
-                        post_tasks.append(self.__logger.info({'module': self.name, 'response': {'uid': request.uid, 'operation': self.__alias, 'data': json.dumps(response)}}))
+                        post_tasks.append(self.__logger.info({'module': self.name, 'response': {'uid': request.uid, 'operation': self.__alias, 'data': json.dumps(response, default=str)}}))
                 # handle request exceptions
                 except (aiohttp.ClientError, aiohttp.InvalidURL, asyncio.TimeoutError, TimeoutError, OSError, gaierror) as e:
                     # log exception

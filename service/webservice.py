@@ -61,8 +61,10 @@ async def redirect(request: ControlRequest):
         response = RedirectResponse(url='/api/cmiu/v2/control')
         return response
     elif request.type == "places":
-        response = RedirectResponse(url='/api/cmiu/v2/control')
+        response = RedirectResponse(url='/api/cmiu/v2/places')
         return response
+    elif request.typ == "season_card":
+        response = RedirectResponse(url='/api/cmiu/v2/subscriptions')
 
 
 def run():

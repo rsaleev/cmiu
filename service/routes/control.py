@@ -22,7 +22,7 @@ name = "control"
 
 class CommandRequest(BaseModel):
     type: str
-    error: 0
+    error: int = 0 
     date_event: str
     device_number: int
     device_ip: str
@@ -365,28 +365,40 @@ async def challenged_in(device, request):
         check_tasks.append(ws.DBCONNECTOR_IS.callproc('is_status_get', rows=1, values=[device['terId'], 'Network']))
         check_tasks.append(ws.DBCONNECTOR_IS.callproc('is_status_get', rows=1, values=[0, 'Command']))
         check_tasks.append(ws.DBCONNECTOR_IS.callproc('is_device_get', rows=1, values=[0, None, None, None, None]))
-        status, adv_status, gate_status, last_command, network_status, last_server_command, device_server = await asyncio.gather(*check_tasks, return_exceptions=True)
+        check_tasks.append(ws.DBCONNECTOR_IS.callproc('is_places_get', rows=-1, values=[device['areaId']]))
+        status, adv_status, gate_status, last_command, network_status, last_server_command, device_server, places = await asyncio.gather(*check_tasks, return_exceptions=True)
+        free_places = next(p['freePlaces'] for p in places if p['clientType'] == 2)
         # check status and generate event for CMIU
         if status['statusVal'] == 'OPENED':
-            report_status = CommandStatus(device, 'Barrier', 'ALREADY_OPENED')
+            report_status = CommandStatus(device, 'Barrier', 'RECENTLY_OPENED')
             try:
-                await asyncio.wait_for(ws.AMQPCONNECTOR.send(report_status.instance, persistent=True, keys=['active.barrier'], priority=10), timeout=0.5)
+                await asyncio.wait_for(ws.AMQPCONNECTOR.send(report_status.instance, persistent=True, keys=['event.barrier'], priority=10), timeout=0.5)
             except:
                 pass
             return False
-        elif (adv_status['statusVal'] == 'LOCKED' or
-              gate_status['statusVal'] == 'OUT_OF_SERVICE' or
+        elif adv_status['statusVal'] == 'LOCKED':
+            report_status = CommandStatus(device, 'Barrier', 'RECENTLY_LOCKED')
+            try:
+                await asyncio.wait_for(ws.AMQPCONNECTOR.send(report_status.instance, persistent=True, keys=['event.barrier'], priority=10), timeout=0.5)
+            except:
+                pass
+            return False
+        elif (gate_status['statusVal'] == 'OUT_OF_SERVICE' or
               network_status['statusVal'] == 'OFFLINE' or
               last_command['statusVal'] == 'CHALLENGED_IN' and (last_command['statusTs'] is None or last_command['statusTs'] + timedelta(seconds=5) < request.date_event)):
             return False
-        else:
+        elif free_places > 0:
             tasks = []
+            report_status = CommandStatus(device, 'Command', 'CHALLENGED_IN')
             tasks.append(ws.SOAPCONNECTOR.execute('SetDeviceStatusHeader', header=True, device=device['terAddress'], sStatus='open'))
             tasks.append(ws.DBCONNECTOR_IS.callproc('is_status_upd', rows=0, values=[device['terId'], 'Command',  CommandType(request.command_number).name, datetime.now()]))
             report_status_barrier = CommandStatus(device, 'Command',  CommandType(request.command_number).name)
-            tasks.append(ws.AMQPCONNECTOR.send(report_status_barrier.instance, persistent=True, keys=['active.barrier', 'command.challenged.in'], priority=10))
+            tasks.append(ws.AMQPCONNECTOR.send(report_status.instance, persistent=True, keys=['command.challenged.in'], priority=10))
             result, _, _, _ = await asyncio.gather(*tasks)
             return result
+        elif free_places == 0:
+            report_status = CommandStatus(device, 'Places', 'CHALLENGED_FULL')
+            await ws.AMQPCONNECTOR.send(report_status.instance, persistent=True, keys=['event.places.full'], priority=10)
     else:
         return False
 
@@ -407,7 +419,7 @@ async def challenged_out(device, request):
         if status['statusVal'] == 'OPENED':
             report_status = CommandStatus(device, 'Barrier', 'ALREADY_OPENED')
             try:
-                await asyncio.wait_for(ws.AMQPCONNECTOR.send(report_status.instance, persistent=True, keys=['active.barrier'], priority=10), timeout=0.5)
+                await asyncio.wait_for(ws.AMQPCONNECTOR.send(report_status.instance, persistent=True, keys=['event.barrier'], priority=10), timeout=0.5)
             except:
                 pass
             return False
@@ -421,7 +433,7 @@ async def challenged_out(device, request):
             tasks.append(ws.SOAPCONNECTOR.execute('SetDeviceStatusHeader', header=True, device=device['terAddress'], sStatus='open'))
             tasks.append(ws.DBCONNECTOR_IS.callproc('is_status_upd', rows=0, values=[device['terId'], 'Command',  CommandType(request.command_number).name, datetime.now()]))
             report_status_barrier = CommandStatus(device, 'Command',  CommandType(request.command_number).name)
-            tasks.append(ws.AMQPCONNECTOR.send(report_status_barrier.instance, persistent=True, keys=['active.barrier', 'command.challenged.out'], priority=10))
+            tasks.append(ws.AMQPCONNECTOR.send(report_status_barrier.instance, persistent=True, keys=['event.barrier', 'command.challenged.out'], priority=10))
             result, _, _, _ = await asyncio.gather(*tasks)
             return result
     else:
@@ -703,10 +715,8 @@ async def com_exec(*, request: CommandRequest):
                         tasks.add_task(ws.DBCONNECTOR_IS.callproc, 'is_log_ins', rows=0, values=[name, 'info',
                                                                                                  json.dumps({'uid': str(uid), 'response': response.dict(exclude_unset=True)}, ensure_ascii=False, default=str), datetime.now()])
                         return Response(json.dumps(response.dict(exclude_unset=True), default=str), status_code=403, media_type='application/json', background=tasks)
-
                 elif request.command_number == 81:
                     pass
-
                 elif request.command_number == 82:
                     pass
                 elif request.command_number == 101:
@@ -774,3 +784,7 @@ async def com_exec(*, request: CommandRequest):
                     response.error = 1
                     response.date_event = datetime.now()
                     return Response(json.dumps(response.dict(exclude_unset=True), default=str), status_code=403, media_type='application/json', background=tasks)
+    except Exception as e:
+        response.error = 1
+        response.date_event = datetime.now()
+        return Response(json.dumps(response.dict(exclude_unset=True), default=str), status_code=403, media_type='application/json', background=tasks)

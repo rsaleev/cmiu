@@ -16,7 +16,7 @@ import configuration.settings as cs
 importlib.reload(cs)
 
 
-class MoneyListener:
+class MoneyNotifier:
 
     def __init__(self):
         self.__dbconnector_is: object = None
@@ -26,7 +26,7 @@ class MoneyListener:
         self.__eventloop = None
         self.__eventsignal = False
         self.name = 'MoneyNotifier'
-        self.alias = 'cmiu_money'
+        self.alias = 'money'
 
     @property
     def eventloop(self):
@@ -119,6 +119,7 @@ class MoneyListener:
         await self.__logger.info({'module': self.name, 'msg': 'Starting...'})
         connections_tasks = []
         connections_tasks.append(AsyncDBPool(cs.IS_SQL_CNX).connect())
+        connections_tasks.append(AsyncDBPool(cs.WS_SQL_CNX).connect())
         connections_tasks.append(AsyncAMQP(cs.IS_AMQP_USER, cs.IS_AMQP_PASSWORD, cs.IS_AMQP_HOST, exchange_name='integration', exchange_type='topic').connect())
         self.__dbconnector_is, self.__amqpconnector = await asyncio.gather(*connections_tasks)
         await self.__amqpconnector.bind('cmiu_money', ['payment.status.finished'], durable=True)
@@ -159,13 +160,13 @@ class MoneyListener:
                         tasks.append(self.__dbconnector_is.callproc('is_logs', rows=0, values=['cmiu', 'info', json.dumps(request.instance, default=str), datetime.now()]))
                         await asyncio.gather(*tasks, return_exceptions=True)
                         try:
-                            conn = aiohttp.TCPConnector(forced_close=True, verify_ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
+                            conn = aiohttp.TCPConnector(force_close=True, ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
                             async with aiohttp.ClientSession(connector=conn) as session:
                                 async with session.post(url=f'{cs.CMIU_URL}/money', json=request.instance, timeout=cs.CMIU_TIMEOUT, raise_for_status=True) as r:
                                     response = await r.json()
                                     post_tasks.append(self.__logger.info({'module': self.name, 'uid': request.uid, 'response': response}))
                                     post_tasks.append(self.__dbconnector_is.callproc('is_logs', rows=0, values=[
-                                                      'cmiu', 'info', json.dumps({'uid': request.uid, 'response': response}), datetime.now()]))
+                                                      'cmiu', 'info', json.dumps({'uid': request.uid, 'response': response}, default=str), datetime.now()]))
                                     post_tasks.append(self.__dbconnector_is.callproc('cmiu_money_upd', rows=0, values=[
                                         cmiu_inv['amppId'], cmiu_inv['amppChannel'], cmiu_inv['moneyValue'], is_inv['moneyQty']]))
                         except (aiohttp.ClientError, aiohttp.InvalidURL, asyncio.TimeoutError, TimeoutError, OSError, gaierror) as e:

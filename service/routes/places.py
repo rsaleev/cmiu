@@ -22,7 +22,7 @@ name = "command.places"
 
 class PlacesRequest(BaseModel):
     type: str
-    error: 0
+    error: int = 0
     date_event: str
     client_free: int
     client_busy: int
@@ -39,8 +39,8 @@ class PlacesRequest(BaseModel):
 class PlacesResponse(BaseModel):
     type: str
     error: int = 0
-
     parking_number: Optional[int]
+    date_event: str
 
     @validator('date_event', pre=True)
     def date_validator(cls, v):

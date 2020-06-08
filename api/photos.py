@@ -17,7 +17,7 @@ import configuration.settings as cs
 importlib.reload(cs)
 
 
-class EntryListener:
+class ImagesUploader:
     def __init__(self):
         self.__eventloop = None
         self.__eventsignal = False
@@ -59,7 +59,7 @@ class EntryListener:
         self.__dbconnector_is, self.__dbconnector_wp, self.__soapconnector_wp, self.__amqpconnector = await asyncio.gather(*connections_tasks)
         await self.__amqpconnector.bind('cmiu_images', ['event.*.loop1.free', 'event.*.loop2.free', 'event.*.barrier.closed'], durable=True)
         pid = os.getpid()
-        await self.__dbconnector_is.callproc('is_processes_ins', rows=0, values=[self.name, 1, pid])
+        await self.__dbconnector_is.callproc('is_processes_ins', rows=0, values=[self.name, 1, pid, datetime.now()])
         await self.__logger.info({'module': self.name, 'info': 'Started'})
         return self
 
@@ -71,7 +71,7 @@ class EntryListener:
         data_out = base64.b64decode(data)
         date_event = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
         headers = {'cmiu_parking_number': f'{cs.AMPP_PARKING_ID}', 'cmiu_camera_number': '', 'cmiu_action_uid': data['actUID'], 'cmiu_transaction_uid': data['traUID'], 'cmiu_date_event': date_event}
-        conn = aiohttp.TCPConnector(forced_close=True, verify_ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
+        conn = aiohttp.TCPConnector(force_close=True, ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
         try:
             async with aiohttp.ClientSession(connector=conn) as session:
                 with aiohttp.MultipartWriter("form-data", boundary=uid, headers=headers) as mpwriter:

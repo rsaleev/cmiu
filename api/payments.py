@@ -148,17 +148,21 @@ class PaymentNotifier:
         await self.__logger.info({'module': self.name, 'info': 'Statrting...'})
         connections_tasks = []
         connections_tasks.append(AsyncDBPool(cs.IS_SQL_CNX).connect())
+        connections_tasks.append(AsyncDBPool(cs.WS_SQL_CNX).connect())
         connections_tasks.append(AsyncAMQP(cs.IS_AMQP_USER, cs.IS_AMQP_PASSWORD, cs.IS_AMQP_HOST, exchange_name='integration', exchange_type='topic').connect())
         self.__dbconnector_is, self.__dbconnector_wp, self.__soapconnector_wp, self.__amqpconnector = await asyncio.gather(*connections_tasks)
         await self.__amqpconnector.bind('cmiu_entries', ['event.payment.*.finished'], durable=True)
         pid = os.getpid()
-        await self.__dbconnector_is.callproc('is_processes_ins', rows=0, values=[self.name, 1, pid, datetime.now()])
+        await self.__dbconnector_is.callproc('cmiu_processes_ins', rows=0, values=[self.name, 1, pid, datetime.now()])
         await self.__logger.info({'module': self.name, 'info': 'Started'})
         return self
 
     async def _process(self, redelivered, key, data):
         await asyncio.sleep(0.5)
-        stored_data = await self.__dbconnector_is.callproc('is_payment_get', rows=1, values=[data['device_id'], 1])
+        consume_tasks = []
+        consume_tasks.append(self.__dbconnector_is.callproc('is_payment_by_uid_get', rows=1, values=[data['tra_uid']]))
+        consume_tasks.append(self.__dbconnector_is.calproc('is_payment_upd', rows=0, values=[data['tra_uid'], datetime.now(), None, None]))
+        stored_data, _ = await asyncio.gather(*consume_tasks)
         if not stored_data is None:
             request = self.PaymentRequest(data, stored_data)
             pre_tasks = []
@@ -167,7 +171,7 @@ class PaymentNotifier:
                                                                                            json.dumps({'uid': request.uid, 'operation': self.alias, 'request': request.instance}, default=str), datetime.now()]))
             pre_tasks.append(self.__logger.info({'module': self.name, 'request': {'uid': request.uid, 'data': request.instance}}))
             await asyncio.gather(*pre_tasks)
-            conn = aiohttp.TCPConnector(forced_close=True, verify_ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
+            conn = aiohttp.TCPConnector(force_close=True, ssl=False, enable_cleanup_closed=True, ttl_dns_cache=3600)
             post_tasks = []
             async with aiohttp.ClientSession(connector=conn) as session:
                 # convert dict to urlencoded on the fly
